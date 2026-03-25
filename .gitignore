@@ -1,0 +1,17 @@
+# Local env – không đẩy lên repo (domain, secrets)
+.env
+.env.local
+.env.*.local
+
+# Dependencies & build
+node_modules
+dist
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.DS_Store
+.idea
+.vscode

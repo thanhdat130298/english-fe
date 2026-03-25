@@ -8,14 +8,17 @@ import {
   ChevronLeft,
   ChevronRight,
   LogOut,
-  X } from
-'lucide-react';
+  X,
+  RotateCw,
+} from 'lucide-react';
+
 export type Page =
-'translate' |
-'vocabulary' |
-'wordlists' |
-'progress' |
-'profile';
+  | 'translate'
+  | 'vocabulary'
+  | 'review'
+  | 'wordlists'
+  | 'progress'
+  | 'profile';
 type SidebarProps = {
   currentPage: Page;
   onNavigate: (page: Page) => void;
@@ -44,6 +47,11 @@ export function Sidebar({ currentPage, onNavigate, onLogout, isOpen = true, onCl
     id: 'vocabulary',
     label: 'Vocabulary',
     icon: BookOpen
+  },
+  {
+    id: 'review',
+    label: 'Review',
+    icon: RotateCw
   },
   {
     id: 'wordlists',

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
-import { ArrowRight, Bookmark, Plus, Loader2, Check, AlertCircle } from 'lucide-react';
-import { translateApi, vocabularyApi } from '../services/api';
+import { ArrowRight, Loader2, AlertCircle, Volume2 } from 'lucide-react';
+import { translateApi, type DictionaryEntry, type TranslateResponse } from '../services/api';
 
 type RecentTranslation = {
   source: string;
@@ -22,35 +22,20 @@ function formatRelativeTime(dateStr: string): string {
   return date.toLocaleDateString();
 }
 
+function getDictionaryFromResponse(response: TranslateResponse): DictionaryEntry[] | null {
+  if (!response.dictionary || response.dictionary.length === 0) return null;
+  return response.dictionary;
+}
+
 export function TranslatePage() {
   const [inputText, setInputText] = useState('');
   const [translatedText, setTranslatedText] = useState('');
+  const [dictionaryResult, setDictionaryResult] = useState<DictionaryEntry[] | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [hasTranslated, setHasTranslated] = useState(false);
-  const [isSaved, setIsSaved] = useState(false);
-  const [vocabularyId, setVocabularyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [recentTranslations, setRecentTranslations] = useState<RecentTranslation[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const loadRecentTranslations = async () => {
-    try {
-      const items = await vocabularyApi.getAll(0, 10);
-      setRecentTranslations(
-        items.map((item) => ({
-          source: item.word,
-          target: item.meaning,
-          time: formatRelativeTime(item.createdAt),
-        }))
-      );
-    } catch {
-      // Ignore - recent translations are optional
-    }
-  };
-
-  useEffect(() => {
-    loadRecentTranslations();
-  }, []);
 
   // Count words in input text
   const getWordCount = (text: string): number => {
@@ -72,23 +57,37 @@ export function TranslatePage() {
     if (!inputText.trim() || !isValidWordCount) return;
     setIsTranslating(true);
     setHasTranslated(false);
-    setIsSaved(false);
     setError(null);
-    setVocabularyId(null);
+    setDictionaryResult(null);
 
     try {
       const response = await translateApi.translate({
         text: inputText,
-        targetLang: 'VI', // Vietnamese
+        targetLang: 'VI',
+        saveToVocabulary: true,
+        vocabularyWord: inputText.trim(),
+        vocabularyExample: inputText,
+        vocabularySourceText: inputText,
       });
-      setTranslatedText(response.translatedText);
-      if (response.vocabulary) {
-        setVocabularyId(response.vocabulary.id);
+
+      if (typeof (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV !== 'undefined') {
+        console.log('[Translate] API response:', response);
       }
-      setRecentTranslations((prev) => [
-        { source: inputText, target: response.translatedText, time: 'Just now' },
-        ...prev.filter((r) => !(r.source === inputText && r.target === response.translatedText)).slice(0, 9),
-      ]);
+
+      const dictionary = getDictionaryFromResponse(response);
+      let displayTarget = '';
+
+      if (dictionary && dictionary.length > 0) {
+        setDictionaryResult(dictionary);
+        const apiTranslated = response.translatedText;
+        displayTarget = apiTranslated || (dictionary[0]?.meanings?.[0]?.definitions?.[0]?.definition ?? dictionary[0]?.word ?? '');
+        setTranslatedText(displayTarget);
+      } else {
+        setDictionaryResult(null);
+        setTranslatedText(response.translatedText);
+        displayTarget = response.translatedText;
+      }
+
       setIsTranslating(false);
       setHasTranslated(true);
     } catch (err: any) {
@@ -99,36 +98,6 @@ export function TranslatePage() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       handleTranslate();
-    }
-  };
-  const handleSave = async () => {
-    if (!inputText.trim() || !translatedText) return;
-    
-    try {
-      // If vocabulary was already created during translation, mark as saved
-      if (vocabularyId) {
-        setIsSaved(true);
-        setTimeout(() => setIsSaved(false), 2000);
-        return;
-      }
-
-      // Otherwise, translate with saveToVocabulary flag
-      const response = await translateApi.translate({
-        text: inputText,
-        targetLang: 'VI',
-        saveToVocabulary: true,
-        vocabularyExample: inputText,
-        vocabularySourceText: inputText,
-      });
-
-      if (response.vocabulary) {
-        setVocabularyId(response.vocabulary.id);
-        setIsSaved(true);
-        setTimeout(() => setIsSaved(false), 2000);
-        loadRecentTranslations();
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to save to vocabulary');
     }
   };
 
@@ -206,79 +175,104 @@ export function TranslatePage() {
       )}
 
       {/* Output Section */}
-      {(hasTranslated || isTranslating) &&
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 animate-in fade-in slide-in-from-top-4 duration-300">
-          {isTranslating ?
-        <div className="space-y-3">
+      {(hasTranslated || isTranslating) && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 animate-in fade-in slide-in-from-top-4 duration-300">
+          {isTranslating ? (
+            <div className="space-y-3">
               <div className="h-4 bg-gray-100 rounded w-3/4 animate-pulse" />
               <div className="h-4 bg-gray-100 rounded w-1/2 animate-pulse" />
-            </div> :
-
-        <>
-              <div className="flex justify-between items-start mb-4">
-                <h3 className="text-lg font-medium text-gray-900">
-                  {translatedText}
-                </h3>
-                <div className="flex space-x-2">
-                  <button
-                onClick={handleSave}
-                className={`p-2 rounded-lg border transition-colors ${isSaved ? 'bg-green-50 border-green-200 text-green-600' : 'border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}
-                title="Save to Vocabulary">
-
-                    {isSaved ? <Check size={18} /> : <Bookmark size={18} />}
-                  </button>
-                  <button
-                className="p-2 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-900 transition-colors"
-                title="Add to Wordlist">
-
-                    <Plus size={18} />
-                  </button>
+            </div>
+          ) : dictionaryResult && dictionaryResult.length > 0 ? (
+            <>
+              {translatedText && (
+                <div className="mb-6 pb-6 border-b border-gray-100">
+                  <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">
+                    Translation
+                  </h4>
+                  <p className="text-lg font-medium text-gray-900">{translatedText}</p>
                 </div>
-              </div>
-              <div className="flex items-center space-x-2">
-                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-[#E6FAF2] text-[#0C6478]">
-                  Noun
-                </span>
-                <span className="text-sm text-gray-500">Common noun</span>
+              )}
+              {dictionaryResult.map((entry, entryIndex) => (
+                <div key={entryIndex} className={entryIndex > 0 ? 'mt-8 pt-8 border-t border-gray-100' : ''}>
+                  <div className="flex justify-between items-start gap-4 mb-4">
+                    <div>
+                      <h3 className="text-2xl font-semibold text-gray-900">{entry.word}</h3>
+                      {entry.phonetic && (
+                        <p className="text-gray-500 mt-1">{entry.phonetic}</p>
+                      )}
+                      {entry.phonetics && entry.phonetics.length > 0 && (
+                        <div className="flex items-center gap-2 mt-2 flex-wrap">
+                          {entry.phonetics.filter((p) => p.audio).map((p, i) => (
+                            <button
+                              key={i}
+                              type="button"
+                              onClick={() => {
+                                const a = new Audio(p.audio);
+                                a.play();
+                              }}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 text-sm"
+                            >
+                              <Volume2 size={16} />
+                              {p.text || 'Play'}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    {entry.meanings?.map((meaning, mIndex) => (
+                      <div key={mIndex}>
+                        <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium bg-[#E6FAF2] text-[#0C6478] mb-3">
+                          {meaning.partOfSpeech}
+                        </span>
+                        <ul className="space-y-3 list-none pl-0">
+                          {meaning.definitions?.map((def, dIndex) => (
+                            <li key={dIndex} className="border-l-2 border-gray-200 pl-4 py-1">
+                              <p className="text-gray-900">{def.definition}</p>
+                              {def.example && (
+                                <p className="text-gray-600 italic text-sm mt-1">“{def.example}”</p>
+                              )}
+                              {def.synonyms && def.synonyms.length > 0 && (
+                                <p className="text-sm text-gray-500 mt-1">
+                                  Words with the same meaning(Synonyms): {def.synonyms.join(', ')}
+                                </p>
+                              )}
+                              {def.antonyms && def.antonyms.length > 0 && (
+                                <p className="text-sm text-gray-500">
+                                  Words with opposite meaning(Antonyms): {def.antonyms.join(', ')}
+                                </p>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                        {meaning.synonyms && meaning.synonyms.length > 0 && (
+                          <p className="text-sm text-gray-600 mt-2">
+                            <span className="font-medium">Synonyms:</span> {meaning.synonyms.join(', ')}
+                          </p>
+                        )}
+                        {meaning.antonyms && meaning.antonyms.length > 0 && (
+                          <p className="text-sm text-gray-600 mt-1">
+                            <span className="font-medium">Antonyms:</span> {meaning.antonyms.join(', ')}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+            <>
+              <div className="mb-4">
+                <h3 className="text-lg font-medium text-gray-900">{translatedText}</h3>
               </div>
             </>
-        }
-        </div>
-      }
-
-      {/* Recent Translations */}
-      <div className="pt-4">
-        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-4">
-          Recent Translations
-        </h3>
-        <div className="grid gap-4">
-          {recentTranslations.length > 0 ? (
-            recentTranslations.map((item, index) => (
-              <div
-                key={`${item.source}-${item.target}-${index}`}
-                onClick={() => {
-                  setInputText(item.source);
-                  setTranslatedText(item.target);
-                  setHasTranslated(true);
-                }}
-                className="bg-white p-4 rounded-lg border border-gray-200 hover:border-[#09D1C7] transition-colors cursor-pointer group"
-              >
-                <div className="flex justify-between items-start">
-                  <div>
-                    <p className="font-medium text-gray-900">{item.source}</p>
-                    <p className="text-gray-600 mt-1">{item.target}</p>
-                  </div>
-                  <span className="text-xs text-gray-400 group-hover:text-[#15919B] transition-colors">
-                    {item.time}
-                  </span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="text-gray-500 text-sm py-4">No recent translations yet</p>
           )}
         </div>
-      </div>
+      )}
+
     </div>);
 
 }

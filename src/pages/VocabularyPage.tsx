@@ -1,246 +1,209 @@
-import { useState, useEffect } from 'react';
-import { Search, MoreHorizontal, Edit2, Trash2, Filter, Loader2 } from 'lucide-react';
-import { vocabularyApi, VocabularyItem } from '../services/api';
+import { useMemo, useState, useCallback } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Loader2 } from 'lucide-react';
+import {
+  vocabularyApi,
+  vocabularyKeys,
+  type Vocabulary,
+  type VocabularyDifficulty,
+  type VocabListParams,
+} from '../services/api';
 
-export function VocabularyPage() {
-  const [vocabItems, setVocabItems] = useState<VocabularyItem[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editMeaning, setEditMeaning] = useState('');
+/** Stable list query using page/limit API contract. */
+const VOCAB_LIST_PARAMS: VocabListParams = {
+  page: 1,
+  limit: 100,
+  includeArchived: false,
+};
+import { useDebounce } from '../hooks/useDebounce';
+import { Toast } from '../components/Toast';
+import { SearchBar } from './vocabulary/SearchBar';
+import { FilterBar } from './vocabulary/FilterBar';
+import { ReviewBanner } from './vocabulary/ReviewBanner';
+import { VocabularyList } from './vocabulary/VocabularyList';
+import { filterVocabulary } from './vocabulary/filterVocabulary';
+import type { DifficultyFilter, StateFilter } from './vocabulary/types';
 
-  useEffect(() => {
-    loadVocabulary();
-  }, []);
+type VocabularyPageProps = {
+  onNavigateToReview: () => void;
+};
 
-  const loadVocabulary = async () => {
-    try {
-      setIsLoading(true);
-      const data = await vocabularyApi.getAll();
-      setVocabItems(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load vocabulary');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this word?')) return;
-    try {
-      await vocabularyApi.delete(id);
-      setVocabItems(vocabItems.filter(item => item.id !== id));
-      if (selectedId === id) {
-        setSelectedId(null);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to delete vocabulary');
-    }
-  };
-
-  const handleEdit = (item: VocabularyItem) => {
-    setIsEditing(true);
-    setEditMeaning(item.meaning);
-  };
-
-  const handleSaveEdit = async (id: string) => {
-    try {
-      const updated = await vocabularyApi.update(id, { meaning: editMeaning });
-      setVocabItems(vocabItems.map(item => item.id === id ? updated : item));
-      setIsEditing(false);
-      if (selectedId === id) {
-        setSelectedId(null);
-        setTimeout(() => setSelectedId(id), 100);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to update vocabulary');
-    }
-  };
-
-  const filteredVocab = vocabItems.filter(
-    (item) =>
-      item.word.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.meaning.toLowerCase().includes(searchTerm.toLowerCase())
+export function VocabularyPage({ onNavigateToReview }: VocabularyPageProps) {
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
+  const [difficulty, setDifficulty] = useState<DifficultyFilter>('all');
+  const [stateFilter, setStateFilter] = useState<StateFilter>('all');
+  const [toast, setToast] = useState<{ message: string; variant: 'success' | 'error' } | null>(
+    null
   );
-  const selectedItem = vocabItems.find((item) => item.id === selectedId);
+
+  const { data: items = [], isLoading, isError, error, isFetching } = useQuery({
+    queryKey: vocabularyKeys.list(VOCAB_LIST_PARAMS),
+    queryFn: () => vocabularyApi.getList(VOCAB_LIST_PARAMS),
+  });
+
+  const { data: reviewQueue = [] } = useQuery({
+    queryKey: vocabularyKeys.reviewQueue(),
+    queryFn: () => vocabularyApi.getReviewQueue(),
+  });
+
+  const filtered = useMemo(
+    () => filterVocabulary(items, debouncedSearch, difficulty, stateFilter),
+    [items, debouncedSearch, difficulty, stateFilter]
+  );
+
+  /** Matches GET /vocab/review-queue (max 20 due items) */
+  const dueCount = reviewQueue.length;
+
+  const reviewMutation = useMutation({
+    mutationFn: ({
+      id,
+      difficulty: d,
+    }: {
+      id: string;
+      difficulty: VocabularyDifficulty;
+    }) => vocabularyApi.review(id, d),
+    onMutate: async ({ id, difficulty: d }) => {
+      await queryClient.cancelQueries({ queryKey: vocabularyKeys.list(VOCAB_LIST_PARAMS) });
+      const previous = queryClient.getQueryData<Vocabulary[]>(vocabularyKeys.list(VOCAB_LIST_PARAMS));
+      queryClient.setQueryData<Vocabulary[]>(vocabularyKeys.list(VOCAB_LIST_PARAMS), (old) =>
+        old?.map((v) =>
+          v.id === id
+            ? {
+                ...v,
+                difficulty: d,
+                reviewCount: v.reviewCount + 1,
+                isDue: false,
+              }
+            : v
+        )
+      );
+      return { previous };
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData<Vocabulary[]>(vocabularyKeys.list(VOCAB_LIST_PARAMS), (old) =>
+        old?.map((v) => (v.id === updated.id ? updated : v))
+      );
+      queryClient.invalidateQueries({ queryKey: vocabularyKeys.reviewQueue() });
+      setToast({ message: `Updated “${updated.word}”`, variant: 'success' });
+    },
+    onError: (err: Error, _vars, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(vocabularyKeys.list(VOCAB_LIST_PARAMS), ctx.previous);
+      }
+      setToast({ message: err.message || 'Could not save review', variant: 'error' });
+    },
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => vocabularyApi.archive(id),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: vocabularyKeys.list(VOCAB_LIST_PARAMS) });
+      const previous = queryClient.getQueryData<Vocabulary[]>(vocabularyKeys.list(VOCAB_LIST_PARAMS));
+      queryClient.setQueryData<Vocabulary[]>(vocabularyKeys.list(VOCAB_LIST_PARAMS), (old) =>
+        old?.filter((v) => v.id !== id)
+      );
+      return { previous };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: vocabularyKeys.reviewQueue() });
+      setToast({ message: 'Word archived', variant: 'success' });
+    },
+    onError: (err: Error, _id, ctx) => {
+      if (ctx?.previous) {
+        queryClient.setQueryData(vocabularyKeys.list(VOCAB_LIST_PARAMS), ctx.previous);
+      }
+      setToast({ message: err.message || 'Could not archive', variant: 'error' });
+    },
+  });
+
+  const handleReview = useCallback(
+    (id: string, d: VocabularyDifficulty) => {
+      reviewMutation.mutate({ id, difficulty: d });
+    },
+    [reviewMutation]
+  );
+
+  const handleArchive = useCallback(
+    (id: string) => {
+      archiveMutation.mutate(id);
+    },
+    [archiveMutation]
+  );
+
+  const pendingReview =
+    reviewMutation.isPending && reviewMutation.variables
+      ? { id: reviewMutation.variables.id, difficulty: reviewMutation.variables.difficulty }
+      : null;
+
+  const pendingArchiveId =
+    archiveMutation.isPending && archiveMutation.variables ? archiveMutation.variables : null;
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="animate-spin text-[#15919B]" size={32} />
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="animate-spin text-[#15919B]" size={36} aria-label="Loading" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-800 text-sm">
+        {error instanceof Error ? error.message : 'Failed to load vocabulary'}
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <header className="flex justify-between items-center">
-        <div>
+      <header className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
           <h1 className="text-2xl font-semibold text-gray-900">Vocabulary</h1>
-          <p className="text-gray-500 mt-1">
-            Manage your saved words and phrases
-          </p>
+          {isFetching && !isLoading ? (
+            <Loader2 className="animate-spin text-[#15919B]" size={18} aria-hidden />
+          ) : null}
         </div>
-        <span className="px-3 py-1 bg-[#E6FAF2] text-[#0C6478] rounded-full text-sm font-medium">
-          {vocabItems.length} words
-        </span>
+        <p className="text-gray-500 text-sm">
+          Search, filter by difficulty and learning state, and rate words in one tap.
+        </p>
       </header>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-red-600 text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* Search and Filter */}
-      <div className="flex space-x-4">
-        <div className="relative flex-1">
-          <Search
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-            size={20} />
-
-          <input
-            type="text"
-            placeholder="Search vocabulary..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#15919B]/20 focus:border-[#15919B] transition-all" />
-
-        </div>
-        <button className="px-4 py-2.5 bg-white border border-gray-200 rounded-lg text-gray-600 hover:bg-gray-50 hover:text-gray-900 flex items-center transition-colors">
-          <Filter size={18} className="mr-2" />
-          Filter
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* List View */}
-        <div className="lg:col-span-2 space-y-3">
-          {filteredVocab.length > 0 ?
-          filteredVocab.map((item) =>
-          <div
-            key={item.id}
-            onClick={() => {
-              setSelectedId(item.id);
-              setIsEditing(false);
-            }}
-            className={`bg-white p-4 rounded-xl border cursor-pointer transition-all hover:shadow-md ${selectedId === item.id ? 'border-[#15919B] ring-1 ring-[#15919B]' : 'border-gray-200 hover:border-[#09D1C7]'}`}>
-
-                <div className="flex justify-between items-start">
-                  <div>
-                    <h3 className="text-lg font-medium text-gray-900">
-                      {item.word}
-                    </h3>
-                    <p className="text-gray-500 text-sm mt-1 line-clamp-1">
-                      {item.meaning}
-                    </p>
-                  </div>
-                </div>
-              </div>
-          ) :
-
-          <div className="text-center py-12 bg-white rounded-xl border border-gray-200 border-dashed">
-              <p className="text-gray-500">
-                {searchTerm ? `No vocabulary found matching "${searchTerm}"` : 'No vocabulary items yet'}
-              </p>
-            </div>
-          }
-        </div>
-
-        {/* Detail View */}
-        <div className="lg:col-span-1">
-          {selectedItem ?
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sticky top-6">
-              <div className="flex justify-between items-start mb-6">
-                <h2 className="text-2xl font-bold text-gray-900">
-                  {selectedItem.word}
-                </h2>
-                <button className="text-gray-400 hover:text-gray-600">
-                  <MoreHorizontal size={20} />
-                </button>
-              </div>
-
-              <div className="space-y-6">
-                <div>
-                  <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                    Meaning
-                  </h4>
-                  {isEditing && selectedId === selectedItem.id ? (
-                    <div className="space-y-2">
-                      <textarea
-                        value={editMeaning}
-                        onChange={(e) => setEditMeaning(e.target.value)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#15919B]/20"
-                        rows={3}
-                      />
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => handleSaveEdit(selectedItem.id)}
-                          className="px-3 py-1.5 bg-[#213A58] text-white text-sm rounded-lg hover:bg-[#0C6478]">
-                          Save
-                        </button>
-                        <button
-                          onClick={() => {
-                            setIsEditing(false);
-                            setEditMeaning(selectedItem.meaning);
-                          }}
-                          className="px-3 py-1.5 bg-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-300">
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="text-gray-900">{selectedItem.meaning}</p>
-                  )}
-                </div>
-
-                <div>
-                  <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                    Example
-                  </h4>
-                  <div className="bg-gray-50 p-3 rounded-lg border border-gray-100 italic text-gray-700">
-                    "{selectedItem.example}"
-                  </div>
-                </div>
-
-                {selectedItem.sourceText && (
-                  <div>
-                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                      Source Text
-                    </h4>
-                    <div className="bg-gray-50 p-3 rounded-lg border border-gray-100 text-gray-700">
-                      {selectedItem.sourceText}
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-6 border-t border-gray-100 flex justify-between items-center">
-                  <span className="text-xs text-gray-400">
-                    Added on {new Date(selectedItem.createdAt).toLocaleDateString()}
-                  </span>
-                  <div className="flex space-x-2">
-                    <button
-                      onClick={() => handleEdit(selectedItem)}
-                      className="p-2 text-gray-500 hover:text-[#0C6478] hover:bg-[#E6FAF2] rounded-lg transition-colors">
-                      <Edit2 size={18} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(selectedItem.id)}
-                      className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors">
-                      <Trash2 size={18} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div> :
-
-          <div className="bg-gray-50 rounded-xl border border-gray-200 border-dashed p-8 text-center h-full flex flex-col items-center justify-center text-gray-500">
-              <p>Select a word to view details</p>
-            </div>
-          }
+      <div className="flex flex-col lg:flex-row gap-4 lg:items-start">
+        <SearchBar value={search} onChange={setSearch} />
+        <div className="lg:flex-shrink-0 lg:max-w-md w-full">
+          <FilterBar
+            difficulty={difficulty}
+            state={stateFilter}
+            onDifficultyChange={setDifficulty}
+            onStateChange={setStateFilter}
+          />
         </div>
       </div>
-    </div>);
+
+      <ReviewBanner dueCount={dueCount} onStartReview={onNavigateToReview} />
+
+      <section aria-label="Vocabulary list">
+        <p className="text-sm text-gray-500 mb-3">
+          Showing {filtered.length} of {items.length} words
+        </p>
+        <VocabularyList
+          items={filtered}
+          pendingReview={pendingReview}
+          pendingArchiveId={pendingArchiveId}
+          onReview={handleReview}
+          onArchive={handleArchive}
+        />
+      </section>
+
+      {toast ? (
+        <Toast
+          message={toast.message}
+          variant={toast.variant}
+          onClose={() => setToast(null)}
+        />
+      ) : null}
+    </div>
+  );
 }

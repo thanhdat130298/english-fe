@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { Plus, MoreVertical, ArrowRight, Book, Loader2, Trash2, Edit2 } from 'lucide-react';
-import { wordlistsApi, Wordlist, VocabularyItem } from '../services/api';
+import { useState, useEffect, useMemo } from 'react';
+import { Plus, ArrowRight, Book, Loader2, Trash2, X } from 'lucide-react';
+import { wordlistsApi, vocabularyApi, Wordlist, VocabularyItem, Vocabulary } from '../services/api';
 
 const COLORS = ['bg-blue-500', 'bg-green-500', 'bg-indigo-500', 'bg-amber-500', 'bg-rose-500'];
 
@@ -8,9 +8,14 @@ export function WordlistsPage() {
   const [wordlists, setWordlists] = useState<Wordlist[]>([]);
   const [activeList, setActiveList] = useState<string | null>(null);
   const [listItems, setListItems] = useState<VocabularyItem[]>([]);
+  const [allVocabulary, setAllVocabulary] = useState<Vocabulary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isItemsLoading, setIsItemsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [isAddingWord, setIsAddingWord] = useState(false);
+  const [isAddingWordLoading, setIsAddingWordLoading] = useState(false);
+  const [wordSearch, setWordSearch] = useState('');
   const [newListName, setNewListName] = useState('');
   const [newListDesc, setNewListDesc] = useState('');
 
@@ -21,6 +26,7 @@ export function WordlistsPage() {
   useEffect(() => {
     if (activeList) {
       loadListItems(activeList);
+      loadAllVocabulary();
     }
   }, [activeList]);
 
@@ -38,10 +44,22 @@ export function WordlistsPage() {
 
   const loadListItems = async (id: string) => {
     try {
+      setIsItemsLoading(true);
       const items = await wordlistsApi.getItems(id);
       setListItems(items);
     } catch (err: any) {
       setError(err.message || 'Failed to load list items');
+    } finally {
+      setIsItemsLoading(false);
+    }
+  };
+
+  const loadAllVocabulary = async () => {
+    try {
+      const items = await vocabularyApi.getList({ page: 1, limit: 100, includeArchived: false });
+      setAllVocabulary(items);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load vocabulary');
     }
   };
 
@@ -74,6 +92,41 @@ export function WordlistsPage() {
     }
   };
 
+  const handleAddWordToList = async (vocabularyId: string) => {
+    if (!activeList) return;
+    try {
+      setIsAddingWordLoading(true);
+      await wordlistsApi.addItem(activeList, vocabularyId);
+      await loadListItems(activeList);
+    } catch (err: any) {
+      setError(err.message || 'Failed to add word to list');
+    } finally {
+      setIsAddingWordLoading(false);
+    }
+  };
+
+  const handleRemoveWordFromList = async (vocabularyId: string) => {
+    if (!activeList) return;
+    try {
+      await wordlistsApi.removeItem(activeList, vocabularyId);
+      await loadListItems(activeList);
+    } catch (err: any) {
+      setError(err.message || 'Failed to remove word from list');
+    }
+  };
+
+  const candidateWords = useMemo(() => {
+    const existing = new Set(listItems.map((item) => item.id));
+    const q = wordSearch.trim().toLowerCase();
+    return allVocabulary
+      .filter((item) => !existing.has(item.id))
+      .filter((item) => {
+        if (!q) return true;
+        return item.word.toLowerCase().includes(q) || item.meaning.toLowerCase().includes(q);
+      })
+      .slice(0, 50);
+  }, [allVocabulary, listItems, wordSearch]);
+
   const getColorForIndex = (index: number) => COLORS[index % COLORS.length];
 
   if (isLoading) {
@@ -102,19 +155,40 @@ export function WordlistsPage() {
             </h1>
             <p className="text-gray-500 mt-1">{list?.description}</p>
           </div>
-          <button className="px-4 py-2 bg-[#213A58] text-white rounded-lg hover:bg-[#0C6478] transition-colors text-sm font-medium">
-            Practice this list
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setIsAddingWord(true);
+                setWordSearch('');
+              }}
+              className="px-4 py-2 bg-[#213A58] text-white rounded-lg hover:bg-[#0C6478] transition-colors text-sm font-medium inline-flex items-center"
+            >
+              <Plus size={16} className="mr-2" />
+              Add word
+            </button>
+          </div>
         </header>
 
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="p-6">
-            {listItems.length > 0 ? (
+            {isItemsLoading ? (
+              <div className="flex items-center justify-center py-10">
+                <Loader2 className="animate-spin text-[#15919B]" size={24} />
+              </div>
+            ) : listItems.length > 0 ? (
               <div className="space-y-3">
                 {listItems.map((item) => (
-                  <div key={item.id} className="p-4 border border-gray-200 rounded-lg">
-                    <h3 className="font-medium text-gray-900">{item.word}</h3>
-                    <p className="text-sm text-gray-600 mt-1">{item.meaning}</p>
+                  <div key={item.id} className="p-4 border border-gray-200 rounded-lg flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="font-medium text-gray-900">{item.word}</h3>
+                      <p className="text-sm text-gray-600 mt-1">{item.meaning}</p>
+                    </div>
+                    <button
+                      onClick={() => handleRemoveWordFromList(item.id)}
+                      className="text-xs px-2 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50"
+                    >
+                      Remove
+                    </button>
                   </div>
                 ))}
               </div>
@@ -128,6 +202,66 @@ export function WordlistsPage() {
             )}
           </div>
         </div>
+
+        {isAddingWord && (
+          <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/40"
+              onClick={() => setIsAddingWord(false)}
+              aria-label="Close add word modal"
+            />
+            <div className="relative w-full max-w-2xl rounded-xl border border-gray-200 bg-white shadow-xl">
+              <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Add word to list</h3>
+                  <p className="text-sm text-gray-500">Select from your saved vocabulary.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAddingWord(false)}
+                  className="rounded-md p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-4">
+                <input
+                  type="text"
+                  value={wordSearch}
+                  onChange={(e) => setWordSearch(e.target.value)}
+                  placeholder="Search word or meaning..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#15919B]/20"
+                />
+
+                <div className="max-h-80 overflow-y-auto space-y-2">
+                  {candidateWords.length === 0 ? (
+                    <p className="text-sm text-gray-500 py-6 text-center">
+                      No available words to add.
+                    </p>
+                  ) : (
+                    candidateWords.map((item) => (
+                      <div key={item.id} className="border border-gray-200 rounded-lg p-3 flex items-start justify-between gap-4">
+                        <div>
+                          <p className="font-medium text-gray-900">{item.word}</p>
+                          <p className="text-sm text-gray-600 mt-1">{item.meaning}</p>
+                        </div>
+                        <button
+                          onClick={() => handleAddWordToList(item.id)}
+                          disabled={isAddingWordLoading}
+                          className="text-xs px-3 py-1.5 rounded bg-[#0C6478] text-white hover:bg-[#213A58] disabled:opacity-60"
+                        >
+                          Add
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>);
   }
 
