@@ -62,9 +62,27 @@ async function fetchWithTimeout(url: string, timeoutMs: number) {
 }
 
 function getApiBaseUrl(): string {
-  const env = (import.meta as unknown as { env?: { VITE_API_BASE_URL?: string } }).env;
-  const base = (env?.VITE_API_BASE_URL || '/api').replace(/\/+$/, '');
-  return base;
+  const env = (import.meta as unknown as {
+    env?: {
+      VITE_API_BASE_URL?: string;
+      VITE_API_DOMAIN?: string;
+      VITE_API_PROTOCOL?: string;
+    };
+  }).env;
+
+  const explicit = (env?.VITE_API_BASE_URL || '').trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+
+  const domain = (env?.VITE_API_DOMAIN || '').trim();
+  if (domain) {
+    const protocol = (env?.VITE_API_PROTOCOL || 'https').trim();
+    const origin = domain.startsWith('http://') || domain.startsWith('https://')
+      ? domain.replace(/\/+$/, '')
+      : `${protocol}://${domain}`.replace(/\/+$/, '');
+    return `${origin}/api`.replace(/\/+$/, '');
+  }
+
+  return '/api';
 }
 
 export function useServerWarmup(options?: UseServerWarmupOptions): UseServerWarmupResult {

@@ -1,8 +1,30 @@
 // API Service with authentication token management
 
-const envBaseUrl = (import.meta as unknown as { env?: { VITE_API_BASE_URL?: string } }).env
-  ?.VITE_API_BASE_URL;
-const API_BASE_URL = (envBaseUrl || '/api').replace(/\/+$/, '');
+function getApiBaseUrl(): string {
+  const env = (import.meta as unknown as {
+    env?: {
+      VITE_API_BASE_URL?: string;
+      VITE_API_DOMAIN?: string;
+      VITE_API_PROTOCOL?: string;
+    };
+  }).env;
+
+  const explicit = (env?.VITE_API_BASE_URL || '').trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+
+  const domain = (env?.VITE_API_DOMAIN || '').trim();
+  if (domain) {
+    const protocol = (env?.VITE_API_PROTOCOL || 'https').trim();
+    const origin = domain.startsWith('http://') || domain.startsWith('https://')
+      ? domain.replace(/\/+$/, '')
+      : `${protocol}://${domain}`.replace(/\/+$/, '');
+    return `${origin}/api`.replace(/\/+$/, '');
+  }
+
+  return '/api';
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Token management
 const TOKEN_KEY = 'accessToken';
