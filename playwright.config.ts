@@ -14,7 +14,7 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   webServer: {
-    command: 'npm run dev',
+    command: 'VITE_DISABLE_WARMUP=1 npm run dev',
     url: 'http://localhost:5173',
     reuseExistingServer: true,
     timeout: 120000,
